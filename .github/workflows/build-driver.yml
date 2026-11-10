@@ -1,0 +1,49 @@
+
+name: Build ACPI Driver
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Check build environment
+        shell: pwsh
+        run: |
+          msbuild -version
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits" -ErrorAction SilentlyContinue
+
+      - name: Build x64 Release
+        shell: pwsh
+        run: |
+          msbuild acpifiltr.sln /m /p:Configuration=Release /p:Platform=x64 /v:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "Driver build failed"
+          }
+
+      - name: Collect driver files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path output
+          $sys = Get-ChildItem -Recurse -Filter acpifiltr.sys |
+            Where-Object { $_.FullName -notmatch 'output' } |
+            Select-Object -First 1
+          if (-not $sys) {
+            throw "acpifiltr.sys not found"
+          }
+          Copy-Item $sys.FullName output\
+          Copy-Item acpifiltr.inf output\
+
+      - name: Upload driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: acpifiltr-x64
+          path: output/
