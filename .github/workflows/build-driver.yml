@@ -1,60 +1,5 @@
 
-
-      - name: Build x64 Release
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          Write-Host "Searching for stampinf.exe..."
-
-          $roots = @("packages")
-          $kits = "C:\Program Files (x86)\Windows Kits"
-
-          if (Test-Path $kits) {
-            $roots += $kits
-          }
-
-          $tools = @(
-            Get-ChildItem -Path $roots `
-              -Filter stampinf.exe `
-              -File -Recurse `
-              -ErrorAction SilentlyContinue
-          )
-
-          if ($tools.Count -eq 0) {
-            Write-Host "WDK folders:"
-            Get-ChildItem packages -Directory |
-              Select-Object FullName
-
-            throw "stampinf.exe not found in WDK packages"
-          }
-
-          $tool = $tools |
-            Where-Object {
-              $_.FullName -match 'x64|amd64'
-            } |
-            Select-Object -First 1
-
-          if (-not $tool) {
-            $tool = $tools | Select-Object -First 1
-          }
-
-          Write-Host "Found: $($tool.FullName)"
-
-          $env:PATH = "$($tool.DirectoryName);$env:PATH"
-
-          Write-Host "Building acpifiltr..."
-
-          & msbuild acpifiltr.sln `
-            /m `
-            /p:Configuration=Release `
-            /p:Platform=x64 `
-            /v:minimal
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Driver build failed"
-          }
-
+name: Build ACPI Driver
 
 on:
   workflow_dispatch:
@@ -87,7 +32,6 @@ jobs:
           )
 
           foreach ($pkg in $packages) {
-            Write-Host "Installing $pkg"
             & .\nuget.exe install $pkg `
               -Version $version `
               -OutputDirectory packages `
@@ -107,19 +51,43 @@ jobs:
           </Project>
           '@ | Set-Content Directory.Build.props -Encoding utf8
 
-          $header = Get-ChildItem packages -Recurse -Filter ntifs.h |
-            Select-Object -First 1
-
-          if (-not $header) {
-            throw "WDK header ntifs.h missing"
-          }
-
-          Write-Host "Found WDK header: $($header.FullName)"
-
       - name: Build x64 Release
         shell: pwsh
         run: |
-          msbuild acpifiltr.sln `
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host "Searching for stampinf.exe..."
+
+          $roots = @("packages")
+          $kits = "C:\Program Files (x86)\Windows Kits"
+
+          if (Test-Path $kits) {
+            $roots += $kits
+          }
+
+          $tools = @(
+            Get-ChildItem -Path $roots `
+              -Filter stampinf.exe `
+              -File -Recurse `
+              -ErrorAction SilentlyContinue
+          )
+
+          if ($tools.Count -eq 0) {
+            throw "stampinf.exe not found in WDK packages"
+          }
+
+          $tool = $tools |
+            Where-Object { $_.FullName -match 'x64|amd64' } |
+            Select-Object -First 1
+
+          if (-not $tool) {
+            $tool = $tools | Select-Object -First 1
+          }
+
+          Write-Host "Found: $($tool.FullName)"
+          $env:PATH = "$($tool.DirectoryName);$env:PATH"
+
+          & msbuild acpifiltr.sln `
             /m `
             /p:Configuration=Release `
             /p:Platform=x64 `
@@ -132,7 +100,7 @@ jobs:
       - name: Collect driver files
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force output
+          New-Item -ItemType Directory -Force output | Out-Null
 
           $sys = Get-ChildItem -Recurse -Filter acpifiltr.sys |
             Where-Object {
@@ -146,8 +114,6 @@ jobs:
 
           Copy-Item $sys.FullName output\
           Copy-Item acpifiltr.inf output\
-
-          Get-ChildItem output
 
       - name: Upload driver
         uses: actions/upload-artifact@v4
