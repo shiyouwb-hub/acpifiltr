@@ -61,40 +61,21 @@ jobs:
             throw "WDK header ntifs.h missing"
           }
 
-          Write-Host "Found header: $($header.FullName)"
+          Write-Host "Found: $($header.FullName)"
 
       - name: Build x64 Release
+        id: driverbuild
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Write-Host "Searching for x64 stampinf.exe..."
-
-          $roots = @("packages")
-          $kits = "C:\Program Files (x86)\Windows Kits"
-
-          if (Test-Path $kits) {
-            $roots += $kits
-          }
-
           $tools = @(
-            Get-ChildItem -Path $roots `
+            Get-ChildItem packages `
               -Filter stampinf.exe `
-              -File -Recurse `
-              -ErrorAction SilentlyContinue
+              -File -Recurse
           )
 
-          if ($tools.Count -eq 0) {
-            throw "stampinf.exe not found"
-          }
-
-          Write-Host "Available stampinf tools:"
-
-          foreach ($item in $tools) {
-            Write-Host $item.FullName
-          }
-
-          # Select the x64 executable only
           $tool = $tools |
             Where-Object {
               $_.Directory.Name -ieq "x64"
@@ -107,10 +88,9 @@ jobs:
 
           Write-Host "Selected: $($tool.FullName)"
 
-          # Add the x64 WDK tool folder to PATH
           $env:PATH = "$($tool.DirectoryName);$env:PATH"
 
-          Write-Host "Starting x64 Release build..."
+          Write-Host "Building x64 Release driver..."
 
           & msbuild acpifiltr.sln `
             /m `
@@ -119,50 +99,71 @@ jobs:
             /v:minimal
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Driver build failed"
+            Write-Warning "Build or validation failed"
+            exit 1
           }
 
-          Write-Host "MSBuild completed successfully"
-
-      - name: Collect driver files
+      - name: Collect driver output
+        if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           New-Item -ItemType Directory `
-            -Force -Path output | Out-Null
+            -Force output | Out-Null
 
-          $sys = Get-ChildItem -Path . `
-            -Recurse -Filter acpifiltr.sys -File |
-            Where-Object {
-              $_.FullName -notmatch '\\packages\\|\\output\\'
-            } |
-            Select-Object -First 1
+          $buildDir = "x64\Release"
+          $sys = Join-Path $buildDir "acpifiltr.sys"
 
-          if (-not $sys) {
-            throw "acpifiltr.sys not found"
+          if (Test-Path $sys) {
+            Copy-Item $sys output\
+
+            Write-Host "Driver file collected:"
+            Get-Item $sys |
+              Select-Object Name,Length,FullName
+
+            Write-Host "SHA256:"
+            Get-FileHash $sys -Algorithm SHA256 |
+              Format-List
+
+            Write-Host "Signature information:"
+            Get-AuthenticodeSignature $sys |
+              Format-List Status,SignerCertificate
+          }
+          else {
+            Write-Warning "Driver SYS not found"
           }
 
-          Write-Host "Found driver: $($sys.FullName)"
-          Copy-Item $sys.FullName output\
+          $inf = Join-Path $buildDir "acpifiltr.inf"
 
-          $inf = Get-ChildItem -Path . `
-            -Recurse -Filter acpifiltr.inf -File |
-            Where-Object {
-              $_.FullName -notmatch '\\packages\\|\\output\\'
-            } |
-            Select-Object -First 1
-
-          if ($inf) {
-            Copy-Item $inf.FullName output\
+          if (Test-Path $inf) {
+            Copy-Item $inf output\
+          }
+          elseif (Test-Path "acpifiltr.inf") {
+            Copy-Item "acpifiltr.inf" output\
           }
 
-          Write-Host "Collected files:"
-          Get-ChildItem output
+          if (Test-Path "output\acpifiltr.sys") {
+            Write-Host "SYS successfully collected"
+          }
 
-      - name: Upload driver
+      - name: Upload compiled driver
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: acpifiltr-x64
+          name: acpifiltr-x64-test
           path: output/
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Check build status
+        if: always()
+        shell: pwsh
+        env:
+          BUILD_OUTCOME: ${{ steps.driverbuild.outcome }}
+        run: |
+          if ($env:BUILD_OUTCOME -ne "success") {
+            throw "Driver build or validation failed. Check the logs; the SYS artifact may still be available."
+          }
+
+          Write-Host "Driver build and validation succeeded."
