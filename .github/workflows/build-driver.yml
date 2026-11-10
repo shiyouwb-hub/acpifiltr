@@ -32,6 +32,8 @@ jobs:
           )
 
           foreach ($pkg in $packages) {
+            Write-Host "Installing $pkg"
+
             & .\nuget.exe install $pkg `
               -Version $version `
               -OutputDirectory packages `
@@ -39,7 +41,7 @@ jobs:
               -NonInteractive
 
             if ($LASTEXITCODE -ne 0) {
-              throw "NuGet install failed: $pkg"
+              throw "NuGet installation failed: $pkg"
             }
           }
 
@@ -51,12 +53,22 @@ jobs:
           </Project>
           '@ | Set-Content Directory.Build.props -Encoding utf8
 
+          $header = Get-ChildItem packages `
+            -Recurse -Filter ntifs.h -File |
+            Select-Object -First 1
+
+          if (-not $header) {
+            throw "WDK header ntifs.h missing"
+          }
+
+          Write-Host "Found header: $($header.FullName)"
+
       - name: Build x64 Release
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          Write-Host "Searching for stampinf.exe..."
+          Write-Host "Searching for x64 stampinf.exe..."
 
           $roots = @("packages")
           $kits = "C:\Program Files (x86)\Windows Kits"
@@ -73,19 +85,32 @@ jobs:
           )
 
           if ($tools.Count -eq 0) {
-            throw "stampinf.exe not found in WDK packages"
+            throw "stampinf.exe not found"
           }
 
+          Write-Host "Available stampinf tools:"
+
+          foreach ($item in $tools) {
+            Write-Host $item.FullName
+          }
+
+          # Select the x64 executable only
           $tool = $tools |
-            Where-Object { $_.FullName -match 'x64|amd64' } |
+            Where-Object {
+              $_.Directory.Name -ieq "x64"
+            } |
             Select-Object -First 1
 
           if (-not $tool) {
-            $tool = $tools | Select-Object -First 1
+            throw "x64 stampinf.exe not found"
           }
 
-          Write-Host "Found: $($tool.FullName)"
+          Write-Host "Selected: $($tool.FullName)"
+
+          # Add the x64 WDK tool folder to PATH
           $env:PATH = "$($tool.DirectoryName);$env:PATH"
+
+          Write-Host "Starting x64 Release build..."
 
           & msbuild acpifiltr.sln `
             /m `
@@ -97,12 +122,18 @@ jobs:
             throw "Driver build failed"
           }
 
+          Write-Host "MSBuild completed successfully"
+
       - name: Collect driver files
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force output | Out-Null
+          $ErrorActionPreference = 'Stop'
 
-          $sys = Get-ChildItem -Recurse -Filter acpifiltr.sys |
+          New-Item -ItemType Directory `
+            -Force -Path output | Out-Null
+
+          $sys = Get-ChildItem -Path . `
+            -Recurse -Filter acpifiltr.sys -File |
             Where-Object {
               $_.FullName -notmatch '\\packages\\|\\output\\'
             } |
@@ -112,8 +143,22 @@ jobs:
             throw "acpifiltr.sys not found"
           }
 
+          Write-Host "Found driver: $($sys.FullName)"
           Copy-Item $sys.FullName output\
-          Copy-Item acpifiltr.inf output\
+
+          $inf = Get-ChildItem -Path . `
+            -Recurse -Filter acpifiltr.inf -File |
+            Where-Object {
+              $_.FullName -notmatch '\\packages\\|\\output\\'
+            } |
+            Select-Object -First 1
+
+          if ($inf) {
+            Copy-Item $inf.FullName output\
+          }
+
+          Write-Host "Collected files:"
+          Get-ChildItem output
 
       - name: Upload driver
         uses: actions/upload-artifact@v4
