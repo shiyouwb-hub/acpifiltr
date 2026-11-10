@@ -1,5 +1,60 @@
 
-name: Build ACPI Driver
+
+      - name: Build x64 Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host "Searching for stampinf.exe..."
+
+          $roots = @("packages")
+          $kits = "C:\Program Files (x86)\Windows Kits"
+
+          if (Test-Path $kits) {
+            $roots += $kits
+          }
+
+          $tools = @(
+            Get-ChildItem -Path $roots `
+              -Filter stampinf.exe `
+              -File -Recurse `
+              -ErrorAction SilentlyContinue
+          )
+
+          if ($tools.Count -eq 0) {
+            Write-Host "WDK folders:"
+            Get-ChildItem packages -Directory |
+              Select-Object FullName
+
+            throw "stampinf.exe not found in WDK packages"
+          }
+
+          $tool = $tools |
+            Where-Object {
+              $_.FullName -match 'x64|amd64'
+            } |
+            Select-Object -First 1
+
+          if (-not $tool) {
+            $tool = $tools | Select-Object -First 1
+          }
+
+          Write-Host "Found: $($tool.FullName)"
+
+          $env:PATH = "$($tool.DirectoryName);$env:PATH"
+
+          Write-Host "Building acpifiltr..."
+
+          & msbuild acpifiltr.sln `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /v:minimal
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Driver build failed"
+          }
+
 
 on:
   workflow_dispatch:
