@@ -15,16 +15,61 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Check build environment
+      - name: Install WDK and SDK
         shell: pwsh
         run: |
-          msbuild -version
-          Get-ChildItem "C:\Program Files (x86)\Windows Kits" -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Stop'
+          $version = "10.0.28000.2526"
+
+          Invoke-WebRequest `
+            https://dist.nuget.org/win-x86-commandline/latest/nuget.exe `
+            -OutFile nuget.exe
+
+          $packages = @(
+            "Microsoft.Windows.WDK.x64",
+            "Microsoft.Windows.SDK.CPP",
+            "Microsoft.Windows.SDK.CPP.x64"
+          )
+
+          foreach ($pkg in $packages) {
+            Write-Host "Installing $pkg"
+            & .\nuget.exe install $pkg `
+              -Version $version `
+              -OutputDirectory packages `
+              -Source https://api.nuget.org/v3/index.json `
+              -NonInteractive
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "NuGet install failed: $pkg"
+            }
+          }
+
+          @'
+          <Project>
+            <Import Project="packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.x64.props" />
+            <Import Project="packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.x64.props" />
+            <Import Project="packages\Microsoft.Windows.SDK.CPP.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.props" />
+          </Project>
+          '@ | Set-Content Directory.Build.props -Encoding utf8
+
+          $header = Get-ChildItem packages -Recurse -Filter ntifs.h |
+            Select-Object -First 1
+
+          if (-not $header) {
+            throw "WDK header ntifs.h missing"
+          }
+
+          Write-Host "Found WDK header: $($header.FullName)"
 
       - name: Build x64 Release
         shell: pwsh
         run: |
-          msbuild acpifiltr.sln /m /p:Configuration=Release /p:Platform=x64 /v:minimal
+          msbuild acpifiltr.sln `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /v:minimal
+
           if ($LASTEXITCODE -ne 0) {
             throw "Driver build failed"
           }
@@ -32,18 +77,26 @@ jobs:
       - name: Collect driver files
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path output
+          New-Item -ItemType Directory -Force output
+
           $sys = Get-ChildItem -Recurse -Filter acpifiltr.sys |
-            Where-Object { $_.FullName -notmatch 'output' } |
+            Where-Object {
+              $_.FullName -notmatch '\\packages\\|\\output\\'
+            } |
             Select-Object -First 1
+
           if (-not $sys) {
             throw "acpifiltr.sys not found"
           }
+
           Copy-Item $sys.FullName output\
           Copy-Item acpifiltr.inf output\
+
+          Get-ChildItem output
 
       - name: Upload driver
         uses: actions/upload-artifact@v4
         with:
           name: acpifiltr-x64
           path: output/
+          if-no-files-found: error
